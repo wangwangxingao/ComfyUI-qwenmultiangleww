@@ -207,13 +207,16 @@ export const VIEWER_HTML = `
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         // State
+        // 在 state 对象中添加 customPrompts 字段
         let state = {
             azimuth: 0,
             elevation: 0,
             distance: 5,
             lightColor: "#FFFFFF",
             imageUrl: null,
-            useDefaultPrompts: false
+            useDefaultPrompts: false,
+            useCustomPrompts: false,
+            customPrompts: null
         };
 
         let threeScene = null;
@@ -332,27 +335,111 @@ export const VIEWER_HTML = `
             return h_direction + " " + v_direction + " " + distance;
         }
 
-        function updateDisplay() {
-            hValueEl.textContent = Math.round(state.azimuth) + '°';
-            vValueEl.textContent = Math.round(state.elevation) + '°';
-            zValueEl.textContent = state.distance.toFixed(1);
-            if (state.useDefaultPrompts) {
-                promptPreviewEl.textContent = generateQwenPrompt();
-            } else {
-                promptPreviewEl.textContent = generatePromptPreview();
-            }
-        }
 
-        function sendAngleUpdate() {
-            window.parent.postMessage({
-                type: 'ANGLE_UPDATE',
-                horizontal: Math.round(state.azimuth),
-                vertical: Math.round(state.elevation),
-                zoom: Math.round(state.distance * 10) / 10,
-                lightColor: state.lightColor || "#FFFFFF",
-                useDefaultPrompts: state.useDefaultPrompts || false
-            }, '*');
-        }
+        // 添加自定义提示词处理函数
+    function generateCustomPrompt() {
+    if (!state.customPrompts || !state.customPrompts.use_custom) {
+        return generateDefaultPrompt();
+    }
+    
+    const h_angle = state.azimuth % 360;
+    const v_angle = state.elevation;
+    const distance = state.distance;
+    
+    // 从自定义提示词中获取对应的描述
+    let h_direction = getCustomPromptForValue(h_angle, 0, 360, state.customPrompts.azimuth, "light from front");
+    let v_direction = getCustomPromptForValue(v_angle, -90, 90, state.customPrompts.elevation, "eye level");
+    let intensity_desc = getCustomPromptForValue(distance, 0, 10, state.customPrompts.intensity, "medium");
+    
+
+    
+    // 生成颜色描述
+    let color_desc = getColorDescription(state.customPrompts.color, state.lightColor);
+    
+    // 组合提示词
+    let prompt = h_direction + ", " + v_direction;
+    if (intensity_desc) {
+        prompt += ", " + intensity_desc;
+    }
+    if (color_desc) {
+        prompt += ", " + color_desc;
+    }
+    
+    // 添加全局约束
+    // if (state.customPrompts.global_constraints) {
+    //     prompt = state.customPrompts.global_constraints + prompt;
+    // }
+    
+    return prompt;
+}
+
+function getColorDescription(colorTemplate, colorHex) {
+    if (!colorTemplate) {
+        // 没有自定义颜色模板，且颜色不是白色时返回默认颜色描述
+        return "";
+    }
+    
+    // 如果模板中包含 $1，替换为颜色值
+    if (colorTemplate.includes('$1')) {
+        return colorTemplate.replace('$1', colorHex);
+    }
+    
+    // 如果模板中没有 $1，直接返回模板
+    return colorTemplate;
+}
+function getCustomPromptForValue(value, min, max, promptsStr, defaultValue) {
+    if (!promptsStr || promptsStr.trim() === '') {
+        return defaultValue;
+    }
+    
+    const prompts = promptsStr.split('|').map(p => p.trim());
+    if (prompts.length === 0) {
+        return defaultValue;
+    }
+    
+    // 计算值在范围内的位置
+    const normalized = (value - min) / (max - min);
+    const index = Math.floor(normalized * prompts.length);
+    const safeIndex = Math.max(0, Math.min(prompts.length - 1, index));
+    
+    return prompts[safeIndex];
+}
+
+function generateDefaultPrompt() {
+    if (state.useDefaultPrompts) {
+        return generateQwenPrompt();
+    } else {
+        return generatePromptPreview();
+    }
+}
+      
+// 修改 updateDisplay 函数
+function updateDisplay() {
+    hValueEl.textContent = Math.round(state.azimuth) + '°';
+    vValueEl.textContent = Math.round(state.elevation) + '°';
+    zValueEl.textContent = state.distance.toFixed(1);
+    
+    if (state.useCustomPrompts && state.customPrompts) {
+        promptPreviewEl.textContent = generateCustomPrompt();
+    } else {
+        promptPreviewEl.textContent = generateDefaultPrompt();
+    }
+}
+
+     
+// 修改 sendAngleUpdate 函数
+function sendAngleUpdate() {
+    window.parent.postMessage({
+        type: 'ANGLE_UPDATE',
+        horizontal: Math.round(state.azimuth),
+        vertical: Math.round(state.elevation),
+        zoom: Math.round(state.distance * 10) / 10,
+        lightColor: state.lightColor || "#FFFFFF",
+        useDefaultPrompts: state.useDefaultPrompts || false,
+        useCustomPrompts: state.useCustomPrompts || false,
+        customPrompts: state.customPrompts || null
+    }, '*');
+}
 
         function resetToDefaults() {
             state.azimuth = 0;
@@ -967,38 +1054,45 @@ export const VIEWER_HTML = `
             };
         }
 
-        // Message handler
-        window.addEventListener('message', (event) => {
-            const data = event.data;
+     
+// 修改消息处理部分，添加 UPDATE_CUSTOM_PROMPTS 处理
+window.addEventListener('message', (event) => {
+    const data = event.data;
 
-            if (data.type === 'INIT') {
-                state.azimuth = data.horizontal || 0;
-                state.elevation = data.vertical || 0;
-                state.distance = data.zoom || 5;
-                state.lightColor = data.lightColor || "#FFFFFF";
-                if (threeScene) {
-                    threeScene.syncFromState();
-                    threeScene.setCameraView(data.cameraView || false);
-                }
-            } else if (data.type === 'SYNC_ANGLES') {
-                state.azimuth = data.horizontal || 0;
-                state.elevation = data.vertical || 0;
-                state.distance = data.zoom || 5;
-                state.lightColor = data.lightColor || "#FFFFFF";
-                state.useDefaultPrompts = data.useDefaultPrompts || false;
-                if (threeScene) {
-                    threeScene.syncFromState();
-                    threeScene.setCameraView(data.cameraView || false);
-                }
-                updateDisplay();
-            } else if (data.type === 'UPDATE_IMAGE') {
-                state.imageUrl = data.imageUrl;
-                if (threeScene) {
-                    threeScene.updateImage(data.imageUrl);
-                }
-            }
-        });
-
+    if (data.type === 'INIT') {
+        state.azimuth = data.horizontal || 0;
+        state.elevation = data.vertical || 0;
+        state.distance = data.zoom || 5;
+        state.lightColor = data.lightColor || "#FFFFFF";
+        state.useDefaultPrompts = data.useDefaultPrompts || false;
+        state.useCustomPrompts = data.useCustomPrompts || false;
+        if (threeScene) {
+            threeScene.syncFromState();
+            threeScene.setCameraView(data.cameraView || false);
+        }
+    } else if (data.type === 'SYNC_ANGLES') {
+        state.azimuth = data.horizontal || 0;
+        state.elevation = data.vertical || 0;
+        state.distance = data.zoom || 5;
+        state.lightColor = data.lightColor || "#FFFFFF";
+        state.useDefaultPrompts = data.useDefaultPrompts || false;
+        state.useCustomPrompts = data.useCustomPrompts || false;
+        state.customPrompts = data.customPrompts || null;
+        if (threeScene) {
+            threeScene.syncFromState();
+            threeScene.setCameraView(data.cameraView || false);
+        }
+        updateDisplay();
+    } else if (data.type === 'UPDATE_IMAGE') {
+        state.imageUrl = data.imageUrl;
+        if (threeScene) {
+            threeScene.updateImage(data.imageUrl);
+        }
+    } else if (data.type === 'UPDATE_CUSTOM_PROMPTS') {
+        state.customPrompts = data.customPrompts;
+        updateDisplay();
+    }
+});
         // Initialize
         initThreeJS();
         // updateDisplay() will be called after VIEWER_READY is sent
